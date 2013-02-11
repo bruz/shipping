@@ -10,7 +10,7 @@ module Shipping
 
 		# For current implementation (XML) docs, see http://www.ups.com/gec/techdocs/pdf/dtk_RateXML_V1.zip
 		def price
-			@required = [:zip, :country, :sender_zip, :weight]
+			@required = [:zip, :country, :sender_zip, :weight, :residential]
 			@required += [:ups_license_number, :ups_user, :ups_password]
 
 			@insured_value ||= 0
@@ -57,6 +57,7 @@ module Shipping
 							b.CountryCode @country unless @country.blank?
 							b.City @city unless @city.blank?
 							b.StateProvinceCode state unless state.blank?
+              b.ResidentialAddressIndicator if @residential
 						}
 					}
 					b.Service { |b| # The service code
@@ -84,9 +85,12 @@ module Shipping
 						}
 						b.PackageServiceOptions { |b|
 							b.InsuredValue { |b|
-								b.CurrencyCode @currency_code || 'US'
+								b.CurrencyCode @currency_code || 'USD'
 								b.MonetaryValue @insured_value
 							}
+              b.DeliveryConfirmation { |b|
+                b.DCISType '3'
+              }
 						}
 					}
 				}
@@ -94,7 +98,7 @@ module Shipping
 
 			get_response @ups_url + @ups_tool
 
-			return REXML::XPath.first(@response, "//RatingServiceSelectionResponse/RatedShipment/TransportationCharges/MonetaryValue").text.to_f
+			return REXML::XPath.first(@response, "//RatingServiceSelectionResponse/RatedShipment/TotalCharges/MonetaryValue").text.to_f
 		rescue
 			raise ShippingError, get_error
 		end
@@ -139,11 +143,70 @@ module Shipping
 				raise ShippingError, get_error
 		end
 
+		# See ???
+		def validate_street_address
+			@required = [:ups_license_number, :ups_user, :ups_password]
+      @required += [:address, :city, :state, :zip]
+			@ups_url ||= "https://wwwcie.ups.com/ups.app/xml"
+			@ups_tool = '/XAV'
+
+			state = STATES.has_value?(@state.downcase) ? STATES.index(@state.downcase).upcase : @state.upcase unless @state.blank?
+
+			b = request_access
+			b.instruct!
+
+			b.AddressValidationRequest {|b|
+				b.Request {|b|
+					b.RequestAction "XAV"
+					b.TransactionReference {|b|
+						b.CustomerContext "#{@city}, #{state} #{@zip}"
+						b.XpciVersion API_VERSION
+					}
+          b.RequestOption '3'
+				}
+        b.AddressKeyFormat{|b|
+          b.CompanyName @company
+          b.AddressLine @address unless @address.blank?
+          b.PostcodePrimaryLow @zip
+          b.CountryCode @country || "US"
+          b.PoliticalDivision2 @city unless @city.blank?
+          b.PoliticalDivision1 state unless state.blank?
+        }
+			}
+
+			get_response @ups_url + @ups_tool
+
+      if REXML::XPath.first(@response, "//AddressValidationResponse/Response/ResponseStatusCode").text == "0"
+        raise ShippingError, get_error
+			elsif REXML::XPath.first(@response, "//AddressValidationResponse/ValidAddressIndicator")
+        response = Hash.new
+        response[:valid] = true
+        response[:residential] =
+          REXML::XPath.first(@response, "//AddressValidationResponse/AddressClassification/Code").text == "2"
+
+        return response
+			else
+        response = Hash.new
+        response[:valid] = false
+        response[:suggestions] = Array.new
+        REXML::XPath.each(@response, "//AddressValidationResponse/AddressKeyFormat") do |entry|
+          response[:suggestions] << {
+            :address => REXML::XPath.first(entry, "AddressLine").text,
+            :city => REXML::XPath.first(entry, "PoliticalDivision1").text,
+            :state => REXML::XPath.first(entry, "PoliticalDivision2").text,
+            :zip => REXML::XPath.first(entry, "PostcodePrimaryLow").text
+          }
+        end
+
+        return response
+			end
+		end
+
 		# See Ship-WW-XML.pdf for API info
 		# @image_type = [GIF|EPL]	
 		def label
 			@required = [:ups_license_number, :ups_shipper_number, :ups_user, :ups_password]
-			@required +=  [:phone, :email, :company, :address, :city, :state, :zip]
+			@required +=  [:phone, :email, :company, :address1, :address2, :city, :state, :zip]
 			@required += [:sender_phone, :sender_email, :sender_company, :sender_address, :sender_city, :sender_state, :sender_zip ]
 			@ups_url ||= "https://wwwcie.ups.com/ups.app/xml"
 			@ups_tool = '/ShipConfirm'
@@ -189,7 +252,8 @@ module Shipping
 					b.ShipTo { |b|
 						b.CompanyName @company
 						b.Address { |b|
-							b.AddressLine1 @address unless @address.blank?
+							b.AddressLine1 @address1 unless @address1.blank?
+							b.AddressLine2 @address2 unless @address2.blank?
 							b.PostalCode @zip
 							b.CountryCode @country unless @country.blank?
 							b.City @city unless @city.blank?
@@ -250,11 +314,14 @@ module Shipping
 							b.Height @measure_height || 0
 						} if @measure_length || @measure_width || @measure_height
 						b.PackageServiceOptions { |b|
+              b.DeliveryConfirmation { |b|
+                b.DCISType '3'
+              }
 							b.InsuredValue { |b|
-								b.CurrencyCode @currency_code || 'US'
+								b.CurrencyCode @currency_code || 'USD'
 								b.MonetaryValue @insured_value
-							}
-						} if @insured_value
+							} if @insured_value
+						}
 					}
 				}
 				b.LabelSpecification { |b|
@@ -310,10 +377,18 @@ module Shipping
 			begin  
 				response = Hash.new       
 				response[:tracking_number] = REXML::XPath.first(@response, "//ShipmentAcceptResponse/ShipmentResults/PackageResults/TrackingNumber").text
+
+        # GIF
 				response[:encoded_image] = REXML::XPath.first(@response, "//ShipmentAcceptResponse/ShipmentResults/PackageResults/LabelImage/GraphicImage").text
 				response[:image] = Tempfile.new("shipping_label")
 				response[:image].write Base64.decode64( response[:encoded_image] )
 				response[:image].rewind
+
+        #HTML
+				response[:encoded_html] = REXML::XPath.first(@response, "//ShipmentAcceptResponse/ShipmentResults/PackageResults/LabelImage/HTMLImage").text
+				response[:html] = Tempfile.new("shipping_html")
+				response[:html].write Base64.decode64( response[:encoded_html] )
+				response[:html].rewind
 			rescue
 				raise ShippingError, get_error
 			end

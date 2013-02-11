@@ -25,6 +25,8 @@ module Shipping
 
 		attr_accessor :ship_date, :dropoff_type, :pay_type, :currency_code, :image_type, :label_type
 
+    attr_accessor :residential
+
 		def initialize(options = {})
 			prefs = File.expand_path(options[:prefs] || "~/.shipping.yml")
 			YAML.load(File.open(prefs)).each {|pref, value| eval("@#{pref} = #{value.inspect}")} if File.exists?(prefs)
