@@ -381,12 +381,14 @@ module Shipping
         # GIF
 				response[:encoded_image] = REXML::XPath.first(@response, "//ShipmentAcceptResponse/ShipmentResults/PackageResults/LabelImage/GraphicImage").text
 				response[:image] = Tempfile.new("shipping_label")
+response[:image].binmode
 				response[:image].write Base64.decode64( response[:encoded_image] )
 				response[:image].rewind
 
         #HTML
 				response[:encoded_html] = REXML::XPath.first(@response, "//ShipmentAcceptResponse/ShipmentResults/PackageResults/LabelImage/HTMLImage").text
 				response[:html] = Tempfile.new("shipping_html")
+response[:html].binmode
 				response[:html].write Base64.decode64( response[:encoded_html] )
 				response[:html].rewind
 			rescue
