@@ -251,6 +251,7 @@ module Shipping
 					}
 					b.ShipTo { |b|
 						b.CompanyName @company
+						b.PhoneNumber @phone unless @phone.blank?
 						b.Address { |b|
 							b.AddressLine1 @address1 unless @address1.blank?
 							b.AddressLine2 @address2 unless @address2.blank?
